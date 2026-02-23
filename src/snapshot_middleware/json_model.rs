@@ -232,6 +232,14 @@ impl JsonModel {
         let mut properties = UstrMap::with_capacity(self.properties.len());
         for (key, unresolved) in self.properties {
             let value = unresolved.resolve(&class_name, &key)?;
+
+            if class_name == "StyleRule"
+                && key == Ustr::from("PropertiesSerialize")
+                && matches!(&value, Variant::Attributes(attrs) if attrs.is_empty())
+            {
+                continue;
+            }
+
             properties.insert(key, value);
         }
 
@@ -388,4 +396,41 @@ mod test {
                         Some(Variant::Color3(color)) if *color == Color3::new(1.0, 0.0, 127.0 / 255.0)
                 ));
         }
+
+            #[test]
+            fn model_from_vfs_style_rule_properties_serialize_empty_is_omitted() {
+                let mut imfs = InMemoryFs::new();
+                imfs.load_snapshot(
+                    "/foo.model.json",
+                    VfsSnapshot::file(
+                        r#"
+                            {
+                                "className": "StyleRule",
+                                "properties": {
+                                "PropertiesSerialize": {
+                                    "Attributes": {}
+                                }
+                                }
+                            }
+                        "#,
+                    ),
+                )
+                .unwrap();
+
+                let vfs = Vfs::new(imfs);
+
+                let instance_snapshot = snapshot_json_model(
+                    &InstanceContext::default(),
+                    &vfs,
+                    Path::new("/foo.model.json"),
+                    "foo",
+                )
+                .unwrap()
+                .unwrap();
+
+                assert!(instance_snapshot
+                    .properties
+                    .get(&Ustr::from("PropertiesSerialize"))
+                    .is_none());
+            }
 }
