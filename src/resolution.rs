@@ -7,6 +7,7 @@ use rbx_dom_weak::types::{
 };
 use rbx_reflection::{DataType, PropertyDescriptor};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::REF_POINTER_ATTRIBUTE_PREFIX;
 
@@ -287,6 +288,61 @@ impl AmbiguousValue {
             AmbiguousValue::Attributes(_) => "an object containing attributes",
             AmbiguousValue::Font(_) => "an object describing a Font",
             AmbiguousValue::MaterialColors(_) => "an object describing MaterialColors",
+        }
+    }
+}
+
+pub fn normalize_json_value_for_property(class_name: &str, prop_name: &str, value: &mut Value) {
+    if class_name == "StyleRule" && prop_name == "PropertiesSerialize" {
+        normalize_style_rule_properties_serialize_color3uint8(value);
+    }
+}
+
+fn normalize_style_rule_properties_serialize_color3uint8(value: &mut Value) {
+    let Value::Object(serialize_map) = value else {
+        return;
+    };
+
+    let Some(attributes) = serialize_map.get_mut("Attributes") else {
+        return;
+    };
+
+    let Value::Object(attributes_map) = attributes else {
+        return;
+    };
+
+    for attr_value in attributes_map.values_mut() {
+        let Value::Object(encoded_value) = attr_value else {
+            continue;
+        };
+
+        let Some(color_value) = encoded_value.get("Color3uint8") else {
+            continue;
+        };
+
+        let Some(color_array) = color_value.as_array() else {
+            continue;
+        };
+
+        if color_array.len() != 3 {
+            continue;
+        }
+
+        let mut normalized = Vec::with_capacity(3);
+        let mut valid = true;
+
+        for channel in color_array {
+            let Some(channel_value) = channel.as_f64() else {
+                valid = false;
+                break;
+            };
+
+            normalized.push(Value::from(channel_value / 255.0));
+        }
+
+        if valid {
+            encoded_value.remove("Color3uint8");
+            encoded_value.insert("Color3".to_owned(), Value::Array(normalized));
         }
     }
 }

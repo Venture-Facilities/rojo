@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     json,
-    resolution::UnresolvedValue,
+    resolution::{normalize_json_value_for_property, UnresolvedValue},
     snapshot::{InstanceContext, InstanceSnapshot},
     syncback::{filter_properties_preallocated, FsSnapshot, SyncbackReturn, SyncbackSnapshot},
     RojoRef,
@@ -31,7 +31,13 @@ pub fn snapshot_json_model(
         return Ok(None);
     }
 
-    let mut instance: JsonModel = json::from_str_with_context(contents_str, || {
+    let mut json_value = json::parse_value_with_context(contents_str, || {
+        format!("File is not a valid JSON model: {}", path.display())
+    })?;
+
+    normalize_json_model_property_values(&mut json_value);
+
+    let mut instance: JsonModel = serde_json::from_value(json_value).with_context(|| {
         format!("File is not a valid JSON model: {}", path.display())
     })?;
 
@@ -65,6 +71,39 @@ pub fn snapshot_json_model(
         .schema(schema);
 
     Ok(Some(snapshot))
+}
+
+fn normalize_json_model_property_values(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let class_name = map
+                .get("className")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+
+            let properties = map.get_mut("properties");
+
+            if let (Some(class_name), Some(serde_json::Value::Object(properties_map))) =
+                (class_name, properties)
+            {
+                for (prop_name, prop_value) in properties_map {
+                    normalize_json_value_for_property(&class_name, prop_name, prop_value);
+                }
+            }
+
+            let children = map.get_mut("children");
+
+            if let Some(children) = children {
+                normalize_json_model_property_values(children);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for child in arr {
+                normalize_json_model_property_values(child);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn syncback_json_model<'sync>(
@@ -222,6 +261,7 @@ impl JsonModel {
 mod test {
     use super::*;
 
+    use rbx_dom_weak::types::Color3;
     use memofs::{InMemoryFs, VfsSnapshot};
 
     #[test]
@@ -299,4 +339,53 @@ mod test {
 
         insta::assert_yaml_snapshot!(instance_snapshot);
     }
+
+        #[test]
+        fn model_from_vfs_style_rule_properties_serialize_color3uint8() {
+                let mut imfs = InMemoryFs::new();
+                imfs.load_snapshot(
+                        "/foo.model.json",
+                        VfsSnapshot::file(
+                                r#"
+                                        {
+                                            "className": "StyleRule",
+                                            "properties": {
+                                                "PropertiesSerialize": {
+                                                    "Attributes": {
+                                                        "TextColor3": {
+                                                            "Color3uint8": [255, 0, 127]
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                "#,
+                        ),
+                )
+                .unwrap();
+
+                let vfs = Vfs::new(imfs);
+
+                let instance_snapshot = snapshot_json_model(
+                        &InstanceContext::default(),
+                        &vfs,
+                        Path::new("/foo.model.json"),
+                        "foo",
+                )
+                .unwrap()
+                .unwrap();
+
+                let props = match instance_snapshot
+                        .properties
+                        .get(&Ustr::from("PropertiesSerialize"))
+                {
+                        Some(Variant::Attributes(attrs)) => attrs,
+                        other => panic!("Expected PropertiesSerialize to be Variant::Attributes, got {other:?}"),
+                };
+
+                assert!(matches!(
+                        props.get("TextColor3"),
+                        Some(Variant::Color3(color)) if *color == Color3::new(1.0, 0.0, 127.0 / 255.0)
+                ));
+        }
 }
