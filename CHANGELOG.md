@@ -39,6 +39,7 @@ Making a new release? Simply add the new header with the version and date undern
 * Fixed a bug where the notification timeout thread would fail to cancel on unmount ([#1211])
 * Added a "Forget" option to the sync reminder notification to avoid being reminded for that place in the future ([#1215])
 * Improves relative path calculation for sourcemap generation to avoid issues with Windows UNC paths. ([#1217])
+* Fixed `rojo serve` crashing when a file is removed before Rojo processes its create or write event. (fork)
 
 [#1176]: https://github.com/rojo-rbx/rojo/pull/1176
 [#1179]: https://github.com/rojo-rbx/rojo/pull/1179

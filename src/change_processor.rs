@@ -2,7 +2,7 @@ use crossbeam_channel::{select, Receiver, RecvError, Sender};
 use jod_thread::JoinHandle;
 use memofs::{IoResultExt, Vfs, VfsEvent};
 use rbx_dom_weak::types::{Ref, Variant};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{
     fs,
     sync::{Arc, Mutex},
@@ -114,6 +114,34 @@ struct JobThreadContext {
 }
 
 impl JobThreadContext {
+    /// Canonicalizes the path of a VFS event.
+    ///
+    /// The path can be gone when the event is processed, for example when a
+    /// tool writes a file and removes it again within the debounce window. In
+    /// that case, canonicalize the nearest ancestor that exists and append the
+    /// rest of the path. `apply_patches` then handles the path as removed.
+    fn canonicalize_event_path(&self, path: &Path) -> PathBuf {
+        let mut missing = Vec::new();
+        let mut current = path;
+
+        loop {
+            if let Ok(canonical) = self.vfs.canonicalize(current) {
+                return missing
+                    .iter()
+                    .rev()
+                    .fold(canonical, |acc, name| acc.join(name));
+            }
+
+            match (current.parent(), current.file_name()) {
+                (Some(parent), Some(name)) => {
+                    missing.push(name);
+                    current = parent;
+                }
+                _ => return path.to_path_buf(),
+            }
+        }
+    }
+
     /// Computes and applies patches to the DOM for a given file path.
     ///
     /// This function finds the nearest ancestor to the given path that has associated instances
@@ -168,16 +196,8 @@ impl JobThreadContext {
         // For a given VFS event, we might have many changes to different parts
         // of the tree. Calculate and apply all of these changes.
         let applied_patches = match event {
-            VfsEvent::Create(path) | VfsEvent::Write(path) => {
-                self.apply_patches(self.vfs.canonicalize(&path).unwrap())
-            }
-            VfsEvent::Remove(path) => {
-                // MemoFS does not track parent removals yet, so we can canonicalize
-                // the parent path safely and then append the removed path's file name.
-                let parent = path.parent().unwrap();
-                let file_name = path.file_name().unwrap();
-                let parent_normalized = self.vfs.canonicalize(parent).unwrap();
-                self.apply_patches(parent_normalized.join(file_name))
+            VfsEvent::Create(path) | VfsEvent::Write(path) | VfsEvent::Remove(path) => {
+                self.apply_patches(self.canonicalize_event_path(&path))
             }
             _ => {
                 log::warn!("Unhandled VFS event: {:?}", event);
